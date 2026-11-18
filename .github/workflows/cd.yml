@@ -108,15 +108,39 @@ jobs:
             sleep 3
           done
 
-          curl --fail --silent http://localhost:8080/ > /dev/null
-          echo "Frontend is responding"
-
-          for service in postgres redis backend frontend; do
-            container_id="$(docker compose -f docker-compose.deploy.yml ps -q "$service")"
-            status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")"
-            echo "$service: $status"
-            test "$status" = "healthy" || exit 1
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://localhost:8080/ > /dev/null; then
+              echo "Frontend is responding"
+              break
+            fi
+            if [ "$attempt" -eq 40 ]; then
+              docker compose -f docker-compose.deploy.yml logs --no-color
+              exit 1
+            fi
+            sleep 3
           done
+
+          for attempt in $(seq 1 40); do
+            all_healthy=true
+            for service in postgres redis backend frontend; do
+              container_id="$(docker compose -f docker-compose.deploy.yml ps -q "$service")"
+              status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")"
+              echo "$service: $status"
+              if [ "$status" != "healthy" ]; then
+                all_healthy=false
+              fi
+            done
+            if [ "$all_healthy" = true ]; then
+              echo "All services are healthy"
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "::error::Services did not become healthy in time"
+          docker compose -f docker-compose.deploy.yml ps
+          docker compose -f docker-compose.deploy.yml logs --no-color
+          exit 1
 
       - name: Run API tests against deployed images
         working-directory: tests
